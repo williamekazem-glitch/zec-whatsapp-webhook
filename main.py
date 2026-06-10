@@ -377,6 +377,28 @@ async def receive_webhook(request: Request):
 
             return {"status": "ok"}
 
+        # 2c. Client envoie une IMAGE (modèle souhaité)
+        if msg_type == "image":
+            media_id = message["image"]["id"]
+            caption = message["image"].get("caption", "")
+
+            await asyncio.sleep(random.uniform(2, 4))
+
+            # Répondre au client
+            await send_whatsapp_message(
+                from_number,
+                "Bien reçu. Je transmets le modèle à notre équipe qui vous confirmera la disponibilité."
+            )
+
+            # Transférer la photo à Wallid avec contexte
+            await send_whatsapp_message(
+                SUPERVISOR_NUMBER,
+                f"MODELE CLIENT\nNumero : +{from_number}\nLe client souhaite ce modèle. Voir photo ci-dessous."
+            )
+            await send_whatsapp_image(SUPERVISOR_NUMBER, media_id, caption=caption)
+            print(f"Photo modèle du client {from_number} transférée à Wallid")
+            return {"status": "ok"}
+
         # Autres types ignorés
         print(f"Type non géré: {msg_type}")
 
