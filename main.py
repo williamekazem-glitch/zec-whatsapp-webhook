@@ -1,10 +1,9 @@
 """
 ZEC WhatsApp Webhook Server
 Reçoit les messages WhatsApp entrants et répond via Claude (Awa)
-Workflow superviseur : si Awa ne sait pas → notifie Wallid → Wallid répond → Awa améliore → envoie au client
+Workflow superviseur : escalade texte + transfert images (captures Yango)
 """
 import os
-import json
 import httpx
 import asyncio
 import random
@@ -16,9 +15,11 @@ app = FastAPI()
 # Historique des conversations par numéro (en mémoire)
 conversation_history: dict = {}
 
-# File d'attente superviseur : client_number -> question posée
-# Quand Wallid répond, on sait à quel client répondre
-pending_supervisor: dict = {}  # { client_number: question }
+# Escalade texte : client_number -> question posée
+pending_supervisor: dict = {}
+
+# Transfert image : client en attente d'une capture (livraison Yango)
+pending_image_transfer: str = ""  # numéro du dernier client qui attend une capture
 
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "zec_webhook_2024")
@@ -28,8 +29,8 @@ API_BASE = "https://graph.facebook.com/v25.0"
 
 SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250777632164")
 
-# Phrase déclencheur : quand Awa dit ça, on notifie Wallid
 ESCALADE_TRIGGER = "Je transmets votre demande"
+LIVRAISON_TRIGGER = "localisation"  # mot clé dans la réponse d'Awa pour activer le suivi livraison
 
 SYSTEM_PROMPT = """Tu es Awa, commerciale chez ZEC, une entreprise de packaging à Abidjan, Côte d'Ivoire.
 Tu écris comme une vraie personne sur WhatsApp — naturel, chaleureux, simple. Pas trop formel, pas scolaire.
@@ -76,23 +77,23 @@ LIVRAISON :
 Les livraisons se font via Yango. Voici le processus exact :
 
 Etape 1 — Collecte de la localisation :
-Demande au client de partager sa localisation de préférence via WhatsApp (bouton localisation), ou un lien Google Maps ou Yango. Une fois reçue, transmets-la à l'équipe : "Localisation reçue du client [numéro] : [lien/info]. Merci de vérifier les tarifs Yango."
+Demande au client de partager sa localisation de préférence via WhatsApp (bouton localisation), ou un lien Google Maps ou Yango. Une fois reçue, transmets-la à l'équipe.
 
-Etape 2 — Tarifs envoyés par l'équipe :
-L'équipe envoie une capture avec deux options : Express ou 3H. Transmets cette capture au client avec le message : "Voici les options de livraison disponibles pour votre adresse. Laquelle préférez-vous : Express ou 3H ?"
+Etape 2 — Capture Yango :
+L'équipe envoie une capture avec deux options : Express ou 3H. Quand tu reçois la capture, transmets-la au client avec : "Voici les options de livraison pour votre adresse. Vous préférez Express ou 3H ?"
 
 Etape 3 — Choix du client :
-Quand le client choisit, confirme à l'équipe : "Le client [numéro] a choisi : [Express ou 3H]. Merci de procéder."
+Quand le client choisit, confirme à l'équipe : "Le client a choisi [Express ou 3H]."
 
 Livreur personnel :
-Si le client préfère envoyer son propre livreur, informe-le : "Pas de problème. Merci d'appeler directement le +225 05 08 31 63 32 pour confirmer notre disponibilité avant d'envoyer votre livreur."
+Si le client préfère envoyer son propre livreur, informe-le : "Pas de problème. Merci d'appeler le +225 05 08 31 63 32 pour confirmer notre disponibilité avant d'envoyer votre livreur."
 
 REGLES IMPORTANTES :
 - Tu ne réponds QUE aux questions liées à ZEC : produits, commandes, tarifs, livraison, horaires, localisation.
-- Si un client pose une question qui ne concerne pas notre activité (politique, météo, blagues, conseils personnels, etc.), réponds exactement : "Je transmets votre demande à notre équipe qui vous répondra dans les plus brefs délais."
+- Si un client pose une question qui ne concerne pas notre activité, réponds exactement : "Je transmets votre demande à notre équipe qui vous répondra dans les plus brefs délais."
 - Si tu ne connais pas la réponse à une question liée à ZEC, réponds exactement : "Je transmets votre demande à notre équipe qui vous répondra dans les plus brefs délais."
 - Ne jamais inventer des prix ou des informations que tu ne connais pas
-- Ne jamais dire "Bonjour" plus d'une fois par conversation — si tu as déjà salué, ne répète plus "Bonjour" dans les messages suivants
+- Ne jamais dire "Bonjour" plus d'une fois par conversation
 - "Bonjour" uniquement au tout premier message si le client vient de saluer
 - Réponses courtes et directes — maximum 3-4 lignes
 - Zéro emoji dans les messages
@@ -107,7 +108,7 @@ Réponds uniquement avec le texte amélioré, rien d'autre."""
 
 
 async def send_whatsapp_message(to: str, message: str):
-    """Envoie un message WhatsApp"""
+    """Envoie un message texte WhatsApp"""
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{API_BASE}/{PHONE_NUMBER_ID}/messages",
@@ -122,6 +123,30 @@ async def send_whatsapp_message(to: str, message: str):
                 "type": "text",
                 "text": {"body": message}
             }
+        )
+    return response.json()
+
+
+async def send_whatsapp_image(to: str, media_id: str, caption: str = ""):
+    """Transfert une image WhatsApp via son media_id"""
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "image",
+        "image": {"id": media_id}
+    }
+    if caption:
+        payload["image"]["caption"] = caption
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{API_BASE}/{PHONE_NUMBER_ID}/messages",
+            headers={
+                "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json=payload
         )
     return response.json()
 
@@ -151,18 +176,13 @@ async def get_claude_response(from_number: str, user_message: str) -> str:
         )
     data = response.json()
     reply = data["content"][0]["text"]
-
     conversation_history[from_number].append({"role": "assistant", "content": reply})
     return reply
 
 
 async def improve_supervisor_draft(client_number: str, original_question: str, draft: str) -> str:
     """Améliore le brouillon de Wallid avant de l'envoyer au client"""
-    prompt = f"""Question du client : {original_question}
-
-Ébauche de réponse de notre équipe : {draft}
-
-Améliore cette réponse pour l'envoyer au client."""
+    prompt = f"Question du client : {original_question}\n\nÉbauche de réponse : {draft}\n\nAméliore cette réponse pour l'envoyer au client."
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
@@ -182,16 +202,14 @@ Améliore cette réponse pour l'envoyer au client."""
     data = response.json()
     improved = data["content"][0]["text"]
 
-    # Ajouter la réponse améliorée à l'historique du client
     if client_number not in conversation_history:
         conversation_history[client_number] = []
     conversation_history[client_number].append({"role": "assistant", "content": improved})
-
     return improved
 
 
 async def notify_supervisor(client_number: str, question: str):
-    """Notifie Wallid qu'un client attend une réponse"""
+    """Notifie Wallid qu'un client attend une réponse texte"""
     msg = (
         f"CLIENT EN ATTENTE\n"
         f"Numero : +{client_number}\n"
@@ -202,14 +220,26 @@ async def notify_supervisor(client_number: str, question: str):
     print(f"Superviseur notifié pour le client {client_number}")
 
 
+async def notify_supervisor_location(client_number: str, location_info: str):
+    """Notifie Wallid qu'un client a partagé sa localisation — en attente de capture Yango"""
+    global pending_image_transfer
+    pending_image_transfer = client_number
+    msg = (
+        f"LOCALISATION RECUE\n"
+        f"Client : +{client_number}\n"
+        f"Localisation : {location_info}\n\n"
+        f"Envoie-moi la capture Yango et je la transmettrai directement au client."
+    )
+    await send_whatsapp_message(SUPERVISOR_NUMBER, msg)
+    print(f"Localisation transmise à Wallid pour le client {client_number}")
+
+
 @app.get("/webhook")
 async def verify_webhook(request: Request):
-    """Vérification du webhook par Meta"""
     params = dict(request.query_params)
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
-
     if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
         return PlainTextResponse(challenge)
     return Response(status_code=403)
@@ -217,7 +247,7 @@ async def verify_webhook(request: Request):
 
 @app.post("/webhook")
 async def receive_webhook(request: Request):
-    """Reçoit les messages WhatsApp entrants"""
+    global pending_image_transfer
     body = await request.json()
 
     try:
@@ -232,55 +262,98 @@ async def receive_webhook(request: Request):
         from_number = message["from"]
         msg_type = message.get("type", "")
 
-        if msg_type != "text":
-            return {"status": "non_text_ignored"}
+        print(f"Message recu de {from_number}, type: {msg_type}")
 
-        user_text = message["text"]["body"]
-        print(f"Message recu de {from_number}: {user_text}")
-
-        # --- CAS 1 : MESSAGE DE WALLID (superviseur) ---
+        # ── CAS 1 : MESSAGE DE WALLID ──────────────────────────────────────
         if from_number == SUPERVISOR_NUMBER:
-            if pending_supervisor:
-                # Prendre le premier client en attente
-                client_number, original_question = next(iter(pending_supervisor.items()))
-                del pending_supervisor[client_number]
 
-                print(f"Wallid a repondu pour le client {client_number}, amelioration en cours...")
+            # 1a. Wallid envoie une IMAGE → transfert au client en attente de livraison
+            if msg_type == "image":
+                if pending_image_transfer:
+                    client_number = pending_image_transfer
+                    pending_image_transfer = ""
+                    media_id = message["image"]["id"]
 
-                # Délai naturel
-                await asyncio.sleep(random.uniform(2, 4))
+                    await asyncio.sleep(random.uniform(1, 3))
 
-                # Améliorer le brouillon de Wallid
-                improved_reply = await improve_supervisor_draft(client_number, original_question, user_text)
+                    # Transférer l'image au client
+                    await send_whatsapp_image(
+                        client_number,
+                        media_id,
+                        caption="Voici les options de livraison pour votre adresse. Vous préférez Express ou 3H ?"
+                    )
+                    # Ajouter dans l'historique
+                    if client_number not in conversation_history:
+                        conversation_history[client_number] = []
+                    conversation_history[client_number].append({
+                        "role": "assistant",
+                        "content": "J'ai envoyé la capture Yango au client avec les options Express et 3H."
+                    })
 
-                # Envoyer au client
-                await send_whatsapp_message(client_number, improved_reply)
-                print(f"Reponse amelioree envoyee au client {client_number}")
+                    await send_whatsapp_message(SUPERVISOR_NUMBER, f"Capture transmise au client +{client_number}.")
+                    print(f"Capture Yango transmise au client {client_number}")
+                else:
+                    print("Image de Wallid sans client en attente de livraison, ignorée.")
+                return {"status": "ok"}
 
-                # Confirmer à Wallid
-                await send_whatsapp_message(
-                    SUPERVISOR_NUMBER,
-                    f"Reponse transmise au client +{client_number}."
-                )
-            else:
-                # Wallid écrit sans client en attente — message normal ignoré
-                print("Message de Wallid sans client en attente, ignore.")
+            # 1b. Wallid envoie un TEXTE → réponse améliorée pour client en attente
+            if msg_type == "text":
+                user_text = message["text"]["body"]
+                if pending_supervisor:
+                    client_number, original_question = next(iter(pending_supervisor.items()))
+                    del pending_supervisor[client_number]
+
+                    await asyncio.sleep(random.uniform(2, 4))
+                    improved_reply = await improve_supervisor_draft(client_number, original_question, user_text)
+                    await send_whatsapp_message(client_number, improved_reply)
+                    await send_whatsapp_message(SUPERVISOR_NUMBER, f"Reponse transmise au client +{client_number}.")
+                    print(f"Réponse améliorée envoyée au client {client_number}")
+                else:
+                    print("Texte de Wallid sans client en attente, ignoré.")
             return {"status": "ok"}
 
-        # --- CAS 2 : MESSAGE D'UN CLIENT ---
-        await asyncio.sleep(random.uniform(2, 5))
+        # ── CAS 2 : MESSAGE D'UN CLIENT ────────────────────────────────────
 
-        reply = await get_claude_response(from_number, user_text)
+        # 2a. Client envoie sa LOCALISATION WhatsApp
+        if msg_type == "location":
+            location = message["location"]
+            lat = location.get("latitude", "")
+            lng = location.get("longitude", "")
+            name = location.get("name", "")
+            address = location.get("address", "")
+            location_info = f"lat:{lat}, lng:{lng}"
+            if name:
+                location_info += f", {name}"
+            if address:
+                location_info += f", {address}"
 
-        # Envoyer la réponse au client
-        await send_whatsapp_message(from_number, reply)
-        print(f"Reponse envoyee a {from_number}: {reply[:60]}...")
+            await send_whatsapp_message(from_number, "Merci, j'ai bien reçu votre localisation. Je reviens vers vous avec les options de livraison.")
+            await notify_supervisor_location(from_number, location_info)
+            return {"status": "ok"}
 
-        # Si Awa ne sait pas → notifier Wallid
-        if ESCALADE_TRIGGER in reply:
-            pending_supervisor[from_number] = user_text
-            await notify_supervisor(from_number, user_text)
-            print(f"Client {from_number} mis en attente superviseur")
+        # 2b. Client envoie un TEXTE
+        if msg_type == "text":
+            user_text = message["text"]["body"]
+            print(f"Texte client {from_number}: {user_text}")
+
+            await asyncio.sleep(random.uniform(2, 5))
+            reply = await get_claude_response(from_number, user_text)
+            await send_whatsapp_message(from_number, reply)
+            print(f"Réponse envoyée à {from_number}: {reply[:60]}...")
+
+            # Escalade texte si Awa ne sait pas
+            if ESCALADE_TRIGGER in reply:
+                pending_supervisor[from_number] = user_text
+                await notify_supervisor(from_number, user_text)
+
+            # Livraison : si Awa vient de demander la localisation → prépare le suivi
+            if LIVRAISON_TRIGGER in reply.lower():
+                pending_image_transfer = from_number
+
+            return {"status": "ok"}
+
+        # Autres types ignorés
+        print(f"Type non géré: {msg_type}")
 
     except Exception as e:
         print(f"Erreur: {e}")
