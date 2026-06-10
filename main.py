@@ -59,6 +59,11 @@ PRODUITS DISPONIBLES :
 - Sacs cabas personnalisés
 (D'autres produits seront ajoutés prochainement)
 
+QUANTITES :
+- Commande minimum : 100 unités
+- Les quantités disponibles sont : 100, 200, 300, 400, 500... (multiples de 100)
+- Si un client demande une quantité inférieure à 100, informe-le que le minimum de commande est 100 unités
+
 TARIFS :
 Les prix varient selon le produit et la quantité. Demande au client de préciser le produit et la quantité pour lui communiquer le tarif exact.
 
