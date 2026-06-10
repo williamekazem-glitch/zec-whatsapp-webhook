@@ -21,6 +21,10 @@ pending_supervisor: dict = {}
 # Transfert image : client en attente d'une capture (livraison Yango)
 pending_image_transfer: str = ""  # numéro du dernier client qui attend une capture
 
+# Catalogue photos produits : { "sac cabas": media_id, ... }
+# Wallid alimente ce catalogue en envoyant une image avec caption "PHOTO: nom produit"
+product_images: dict = {}
+
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "zec_webhook_2024")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1131891220009937")
@@ -267,33 +271,43 @@ async def receive_webhook(request: Request):
         # ── CAS 1 : MESSAGE DE WALLID ──────────────────────────────────────
         if from_number == SUPERVISOR_NUMBER:
 
-            # 1a. Wallid envoie une IMAGE → transfert au client en attente de livraison
+            # 1a. Wallid envoie une IMAGE
             if msg_type == "image":
-                if pending_image_transfer:
+                media_id = message["image"]["id"]
+                caption = message["image"].get("caption", "").strip()
+
+                # Cas A : ajout d'un photo produit au catalogue  →  "PHOTO: sac cabas"
+                if caption.upper().startswith("PHOTO:"):
+                    product_name = caption[6:].strip().lower()
+                    product_images[product_name] = media_id
+                    await send_whatsapp_message(
+                        SUPERVISOR_NUMBER,
+                        f"Photo enregistree pour le produit : {product_name}.\nCatalogue actuel : {', '.join(product_images.keys())}"
+                    )
+                    print(f"Photo produit ajoutee : {product_name} -> {media_id}")
+
+                # Cas B : capture Yango à transférer au client
+                elif pending_image_transfer:
                     client_number = pending_image_transfer
                     pending_image_transfer = ""
-                    media_id = message["image"]["id"]
 
                     await asyncio.sleep(random.uniform(1, 3))
-
-                    # Transférer l'image au client
                     await send_whatsapp_image(
                         client_number,
                         media_id,
                         caption="Voici les options de livraison pour votre adresse. Vous préférez Express ou 3H ?"
                     )
-                    # Ajouter dans l'historique
                     if client_number not in conversation_history:
                         conversation_history[client_number] = []
                     conversation_history[client_number].append({
                         "role": "assistant",
                         "content": "J'ai envoyé la capture Yango au client avec les options Express et 3H."
                     })
-
                     await send_whatsapp_message(SUPERVISOR_NUMBER, f"Capture transmise au client +{client_number}.")
                     print(f"Capture Yango transmise au client {client_number}")
+
                 else:
-                    print("Image de Wallid sans client en attente de livraison, ignorée.")
+                    print("Image de Wallid non reconnue (pas de PHOTO: et pas de client en attente).")
                 return {"status": "ok"}
 
             # 1b. Wallid envoie un TEXTE → réponse améliorée pour client en attente
@@ -340,6 +354,17 @@ async def receive_webhook(request: Request):
             reply = await get_claude_response(from_number, user_text)
             await send_whatsapp_message(from_number, reply)
             print(f"Réponse envoyée à {from_number}: {reply[:60]}...")
+
+            # Envoi automatique de photo si le client demande un visuel produit
+            if product_images:
+                texte_lower = user_text.lower()
+                for product_name, media_id in product_images.items():
+                    if any(mot in texte_lower for mot in ["photo", "image", "visuel", "voir", "montre", "exemple"]):
+                        if product_name in texte_lower or any(mot in texte_lower for mot in ["produit", "sac", "sachet", "carte"]):
+                            await asyncio.sleep(1)
+                            await send_whatsapp_image(from_number, media_id)
+                            print(f"Photo produit '{product_name}' envoyée à {from_number}")
+                            break
 
             # Escalade texte si Awa ne sait pas
             if ESCALADE_TRIGGER in reply:
