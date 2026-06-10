@@ -11,6 +11,9 @@ from fastapi.responses import PlainTextResponse
 
 app = FastAPI()
 
+# Historique des conversations par numéro (en mémoire, reset au redémarrage)
+conversation_history: dict = {}
+
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "zec_webhook_2024")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1131891220009937")
@@ -49,8 +52,8 @@ Les prix sont disponibles sur notre grille tarifaire. Informe le client que tu p
 📌 RÈGLES IMPORTANTES :
 - Si un client pose une question à laquelle tu ne peux pas répondre, dis-lui poliment : "Je transmets votre demande à notre équipe qui vous répondra dans les plus brefs délais."
 - Ne jamais inventer des prix ou des informations que tu ne connais pas
-- Ne jamais répéter plusieurs fois "Bonjour" dans un même message
-- Utiliser "Bonjour" une seule fois maximum en début de réponse, uniquement si le client vient de saluer
+- Ne jamais dire "Bonjour" plus d'une fois par conversation — si tu as déjà salué le client dans la même conversation, ne répète plus "Bonjour" dans les messages suivants
+- "Bonjour" uniquement au tout premier message si le client vient de saluer, jamais dans les réponses suivantes
 - Réponses courtes et directes — maximum 3-4 lignes
 - Zéro emoji dans les messages
 - Toujours améliorer le style des réponses pour qu'il soit professionnel et courtois
@@ -77,8 +80,18 @@ async def send_whatsapp_message(to: str, message: str):
     return response.json()
 
 
-async def get_claude_response(user_message: str) -> str:
-    """Appelle l'API Claude pour générer une réponse"""
+async def get_claude_response(from_number: str, user_message: str) -> str:
+    """Appelle l'API Claude avec l'historique de conversation"""
+    # Récupérer ou créer l'historique pour ce numéro
+    if from_number not in conversation_history:
+        conversation_history[from_number] = []
+
+    # Ajouter le message du client à l'historique
+    conversation_history[from_number].append({"role": "user", "content": user_message})
+
+    # Garder max 20 messages pour ne pas dépasser les limites
+    messages = conversation_history[from_number][-20:]
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
@@ -91,11 +104,16 @@ async def get_claude_response(user_message: str) -> str:
                 "model": "claude-haiku-4-5",
                 "max_tokens": 500,
                 "system": SYSTEM_PROMPT,
-                "messages": [{"role": "user", "content": user_message}]
+                "messages": messages
             }
         )
     data = response.json()
-    return data["content"][0]["text"]
+    reply = data["content"][0]["text"]
+
+    # Ajouter la réponse d'Awa à l'historique
+    conversation_history[from_number].append({"role": "assistant", "content": reply})
+
+    return reply
 
 
 @app.get("/webhook")
@@ -136,8 +154,8 @@ async def receive_webhook(request: Request):
             import random
             await asyncio.sleep(random.uniform(2, 5))
 
-            # Générer réponse avec Claude
-            reply = await get_claude_response(user_text)
+            # Générer réponse avec Claude (avec historique)
+            reply = await get_claude_response(from_number, user_text)
 
             # Envoyer la réponse
             await send_whatsapp_message(from_number, reply)
