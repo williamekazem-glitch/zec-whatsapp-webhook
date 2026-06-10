@@ -41,7 +41,7 @@ Les prix sont disponibles sur notre grille tarifaire. Informe le client que tu p
 
 🛒 COMMANDE :
 - Acompte de 75% requis à la commande
-- Livraison en jours ouvrables
+- Livraison sous 7 jours ouvrables
 - Frais de livraison à la charge du client
 
 📌 RÈGLES IMPORTANTES :
