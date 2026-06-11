@@ -396,9 +396,9 @@ async def receive_webhook(request: Request):
         print(f"Message recu de {from_number}, type: {msg_type}")
 
         # ── CAS 0 : COMMANDE ADMIN (Wallid ou Zeinab) ─────────────────────
-        if from_number in ADMIN_NUMBERS and msg_type == "text":
+        if msg_type == "text" and message["text"]["body"].upper().startswith("ADMIN:"):
             user_text = message["text"]["body"]
-            if user_text.upper().startswith("ADMIN:"):
+            if from_number in ADMIN_NUMBERS:
                 info = user_text[6:].strip()
                 admin_knowledge.append(info)
                 saved = await save_admin_knowledge(info)
@@ -408,7 +408,14 @@ async def receive_webhook(request: Request):
                     f"Info {status} pour Awa :\n\"{info}\"\n\nTotal : {len(admin_knowledge)} infos"
                 )
                 print(f"ADMIN info ajoutee par {from_number}: {info}")
-                return {"status": "ok"}
+            else:
+                # Numéro non autorisé — renvoie le numéro reçu pour debug
+                await send_whatsapp_message(
+                    SUPERVISOR_NUMBER,
+                    f"Tentative ADMIN refusee.\nNumero recu : {from_number}\nAjouter ce numero aux ADMIN_NUMBERS si autorise."
+                )
+                print(f"ADMIN refuse pour {from_number} - non dans ADMIN_NUMBERS: {ADMIN_NUMBERS}")
+            return {"status": "ok"}
 
         # ── CAS 1 : MESSAGE DE WALLID ──────────────────────────────────────
         if from_number == SUPERVISOR_NUMBER:
