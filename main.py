@@ -37,7 +37,7 @@ async def load_admin_knowledge():
             response = await client.get(
                 f"{SUPABASE_URL}/rest/v1/admin_knowledge?select=info&order=created_at.asc",
                 headers={
-                    "apikey": SUPABASE_KEY,
+                    "apikey": SUPABASE_ANON_KEY,
                     "Authorization": f"Bearer {SUPABASE_KEY}"
                 }
             )
@@ -56,7 +56,7 @@ async def save_admin_knowledge(info: str):
             response = await client.post(
                 f"{SUPABASE_URL}/rest/v1/admin_knowledge",
                 headers={
-                    "apikey": SUPABASE_KEY,
+                    "apikey": SUPABASE_ANON_KEY,
                     "Authorization": f"Bearer {SUPABASE_KEY}",
                     "Content-Type": "application/json",
                     "Prefer": "return=minimal"
@@ -82,8 +82,9 @@ API_BASE = "https://graph.facebook.com/v25.0"
 
 SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250777632164")
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://xkjwzeqjnihqorbsdpkh.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhrand3emVxam5paHFvcmJzZHBraCIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzgxMTU1NDUyLCJleHAiOjIwOTY3MzE0NTJ9.z8t-hK4UPvM4_JQc9g63Lu45zVJvOjB2tX7khNwvlLI")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 # Numéros autorisés à envoyer des commandes ADMIN
 ADMIN_NUMBERS = {
