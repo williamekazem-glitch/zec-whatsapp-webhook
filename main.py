@@ -288,6 +288,9 @@ async def get_claude_response(from_number: str, user_message: str) -> str:
     conversation_history[from_number].append({"role": "user", "content": user_message})
     messages = conversation_history[from_number][-20:]
 
+    # Recharger les infos ADMIN depuis Supabase à chaque appel
+    await load_admin_knowledge()
+
     # Ajouter les infos ADMIN dynamiques au prompt
     system = SYSTEM_PROMPT
     if admin_knowledge:
