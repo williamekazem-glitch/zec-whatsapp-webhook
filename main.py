@@ -138,7 +138,8 @@ Les échantillons sont disponibles mais payants, une fois la maquette envoyée p
 
 COMMANDE :
 - Acompte de 75% requis à la commande
-- Livraison sous 7 jours ouvrables
+- Livraison sous 12 jours ouvrables pour les sacs cabas personnalisés (délai allongé en raison de la forte demande et de notre exigence de qualité)
+- Livraison sous 7 jours ouvrables pour les autres produits
 - Frais de livraison à la charge du client
 
 LIVRAISON :
