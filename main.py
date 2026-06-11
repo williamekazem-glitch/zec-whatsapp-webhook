@@ -25,8 +25,53 @@ pending_image_transfer: str = ""  # numéro du dernier client qui attend une cap
 # Wallid alimente ce catalogue en envoyant une image avec caption "PHOTO: nom produit"
 product_images: dict = {}
 
-# Infos additionnelles envoyées via ADMIN: depuis WhatsApp
+# Cache local des infos ADMIN (chargé depuis Supabase au démarrage)
 admin_knowledge: list = []
+
+
+async def load_admin_knowledge():
+    """Charge les infos ADMIN depuis Supabase au démarrage"""
+    global admin_knowledge
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{SUPABASE_URL}/rest/v1/admin_knowledge?select=info&order=created_at.asc",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}"
+                }
+            )
+        if response.status_code == 200:
+            data = response.json()
+            admin_knowledge = [row["info"] for row in data]
+            print(f"Supabase: {len(admin_knowledge)} infos ADMIN chargées")
+    except Exception as e:
+        print(f"Erreur chargement Supabase: {e}")
+
+
+async def save_admin_knowledge(info: str):
+    """Sauvegarde une nouvelle info ADMIN dans Supabase"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{SUPABASE_URL}/rest/v1/admin_knowledge",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                json={"info": info}
+            )
+        return response.status_code == 201
+    except Exception as e:
+        print(f"Erreur sauvegarde Supabase: {e}")
+        return False
+
+
+@app.on_event("startup")
+async def startup_event():
+    await load_admin_knowledge()
 
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "zec_webhook_2024")
@@ -35,6 +80,9 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 API_BASE = "https://graph.facebook.com/v25.0"
 
 SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250777632164")
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://xkjwzeqjnihqorbsdpkh.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhrand3emVxam5paHFvcmJzZHBraCIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzgxMTU1NDUyLCJleHAiOjIwOTY3MzE0NTJ9.z8t-hK4UPvM4_JQc9g63Lu45zVJvOjB2tX7khNwvlLI")
 
 # Numéros autorisés à envoyer des commandes ADMIN
 ADMIN_NUMBERS = {
@@ -353,9 +401,11 @@ async def receive_webhook(request: Request):
             if user_text.upper().startswith("ADMIN:"):
                 info = user_text[6:].strip()
                 admin_knowledge.append(info)
+                saved = await save_admin_knowledge(info)
+                status = "enregistree" if saved else "enregistree en memoire uniquement"
                 await send_whatsapp_message(
                     from_number,
-                    f"Info enregistree pour Awa :\n\"{info}\"\n\nTotal infos dynamiques : {len(admin_knowledge)}"
+                    f"Info {status} pour Awa :\n\"{info}\"\n\nTotal : {len(admin_knowledge)} infos"
                 )
                 print(f"ADMIN info ajoutee par {from_number}: {info}")
                 return {"status": "ok"}
