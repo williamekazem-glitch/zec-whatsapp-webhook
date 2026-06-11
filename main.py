@@ -69,6 +69,7 @@ INFORMATIONS ZEC :
 PRODUITS DISPONIBLES :
 - Sacs cabas (blanc ou couleur, tailles A5 A4 A3 A2)
 - Sacs cabas personnalisés (avec logo/design)
+- Sacs en satin : 1 600 F l'unité, minimum 100 pcs
 - Gift Box avec ruban (boîtes cadeaux)
 - Étiquettes personnalisées (dont étiquettes transparentes)
 - Sachets zip
