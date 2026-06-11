@@ -63,7 +63,8 @@ async def save_admin_knowledge(info: str):
                 },
                 json={"info": info}
             )
-        return response.status_code == 201
+        print(f"Supabase save status: {response.status_code} | body: {response.text}")
+        return response.status_code in (200, 201)
     except Exception as e:
         print(f"Erreur sauvegarde Supabase: {e}")
         return False
