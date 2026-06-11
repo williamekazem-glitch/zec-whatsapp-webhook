@@ -88,6 +88,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXV
 ADMIN_NUMBERS = {
     "2250777632164",   # Wallid
     "2250778840757",   # Zeinab
+    "2250508316332",   # ZEC Humain
 }
 
 ESCALADE_TRIGGER = "Je transmets votre demande"
