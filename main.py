@@ -25,6 +25,9 @@ pending_image_transfer: str = ""  # numéro du dernier client qui attend une cap
 # Wallid alimente ce catalogue en envoyant une image avec caption "PHOTO: nom produit"
 product_images: dict = {}
 
+# Infos additionnelles envoyées via ADMIN: depuis WhatsApp
+admin_knowledge: list = []
+
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "zec_webhook_2024")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1131891220009937")
@@ -32,6 +35,12 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 API_BASE = "https://graph.facebook.com/v25.0"
 
 SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250777632164")
+
+# Numéros autorisés à envoyer des commandes ADMIN
+ADMIN_NUMBERS = {
+    "2250777632164",   # Wallid
+    "2250778840757",   # Zeinab
+}
 
 ESCALADE_TRIGGER = "Je transmets votre demande"
 LIVRAISON_TRIGGER = "localisation"  # mot clé dans la réponse d'Awa pour activer le suivi livraison
@@ -228,6 +237,11 @@ async def get_claude_response(from_number: str, user_message: str) -> str:
     conversation_history[from_number].append({"role": "user", "content": user_message})
     messages = conversation_history[from_number][-20:]
 
+    # Ajouter les infos ADMIN dynamiques au prompt
+    system = SYSTEM_PROMPT
+    if admin_knowledge:
+        system += "\n\nINFOS MISES À JOUR PAR L'ÉQUIPE :\n" + "\n".join(f"- {info}" for info in admin_knowledge)
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
@@ -239,7 +253,7 @@ async def get_claude_response(from_number: str, user_message: str) -> str:
             json={
                 "model": "claude-haiku-4-5",
                 "max_tokens": 500,
-                "system": SYSTEM_PROMPT,
+                "system": system,
                 "messages": messages
             }
         )
@@ -332,6 +346,19 @@ async def receive_webhook(request: Request):
         msg_type = message.get("type", "")
 
         print(f"Message recu de {from_number}, type: {msg_type}")
+
+        # ── CAS 0 : COMMANDE ADMIN (Wallid ou Zeinab) ─────────────────────
+        if from_number in ADMIN_NUMBERS and msg_type == "text":
+            user_text = message["text"]["body"]
+            if user_text.upper().startswith("ADMIN:"):
+                info = user_text[6:].strip()
+                admin_knowledge.append(info)
+                await send_whatsapp_message(
+                    from_number,
+                    f"Info enregistree pour Awa :\n\"{info}\"\n\nTotal infos dynamiques : {len(admin_knowledge)}"
+                )
+                print(f"ADMIN info ajoutee par {from_number}: {info}")
+                return {"status": "ok"}
 
         # ── CAS 1 : MESSAGE DE WALLID ──────────────────────────────────────
         if from_number == SUPERVISOR_NUMBER:
