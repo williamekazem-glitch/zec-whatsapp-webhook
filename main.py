@@ -74,7 +74,7 @@ PRODUITS DISPONIBLES :
 - Étiquettes personnalisées (dont étiquettes transparentes)
 - Sachets zip
 - Sachets personnalisés
-- Cartes de remerciement
+- Cartes de remerciement : 25 000 F la centaine (minimum 100 pcs)
 
 TAILLES SACS CABAS :
 - A5 = plus petit format
