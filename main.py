@@ -80,7 +80,7 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1131891220009937")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 API_BASE = "https://graph.facebook.com/v25.0"
 
-SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250710111118")
+SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250508316332")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
