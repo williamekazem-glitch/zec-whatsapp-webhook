@@ -80,7 +80,7 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1131891220009937")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 API_BASE = "https://graph.facebook.com/v25.0"
 
-SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250777632164")
+SUPERVISOR_NUMBER = os.environ.get("SUPERVISOR_NUMBER", "2250710111118")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
@@ -88,7 +88,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 # Numéros autorisés à envoyer des commandes ADMIN
 ADMIN_NUMBERS = {
-    "2250777632164",   # Wallid
+    "2250710111118",   # Wallid
     "2250778840757",   # Zeinab
     "2250508316332",   # ZEC Humain
 }
