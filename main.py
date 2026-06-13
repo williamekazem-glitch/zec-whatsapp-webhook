@@ -565,17 +565,20 @@ async def receive_webhook(request: Request):
             await send_whatsapp_message(from_number, reply)
             print(f"Réponse envoyée à {from_number}: {reply[:60]}...")
 
-            # Envoi automatique de photo + infos si le client demande un produit
+            # Envoi automatique de photo si le client demande explicitement une image d'un produit
             if product_images:
-                mots_vides = {"de", "du", "la", "le", "les", "un", "une", "des", "et", "en", "au", "aux", "ce", "que", "qui", "par"}
-                texte_lower = (user_text + " " + reply).lower()
-                for product_name, media_id in product_images.items():
-                    mots_cles = [m for m in product_name.lower().split() if m not in mots_vides and len(m) > 2]
-                    if mots_cles and all(mot in texte_lower for mot in mots_cles):
-                        await asyncio.sleep(1)
-                        await send_whatsapp_image(from_number, media_id)
-                        print(f"Photo '{product_name}' envoyée à {from_number}")
-                        break
+                mots_visuels = {"photo", "image", "visuel", "voir", "montre", "montres", "exemple", "modèle", "modele", "aperçu", "apercu", "illustration"}
+                client_lower = user_text.lower()
+                demande_visuel = any(mot in client_lower for mot in mots_visuels)
+                if demande_visuel:
+                    mots_vides = {"de", "du", "la", "le", "les", "un", "une", "des", "et", "en", "au", "aux", "ce", "que", "qui", "par"}
+                    for product_name, media_id in product_images.items():
+                        mots_cles = [m for m in product_name.lower().split() if m not in mots_vides and len(m) > 2]
+                        if mots_cles and all(mot in client_lower for mot in mots_cles):
+                            await asyncio.sleep(1)
+                            await send_whatsapp_image(from_number, media_id)
+                            print(f"Photo '{product_name}' envoyée à {from_number}")
+                            break
 
             # Escalade texte si Awa ne sait pas
             if ESCALADE_TRIGGER in reply:
