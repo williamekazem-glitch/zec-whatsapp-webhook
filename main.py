@@ -152,6 +152,11 @@ async def save_conversation(phone: str, messages: list):
 @app.on_event("startup")
 async def startup_event():
     await load_admin_knowledge()
+    # Charger les images produits depuis Supabase
+    images = await get_admin_images()
+    for item in images:
+        product_images[item["name"]] = item["media_id"]
+    print(f"Images produits chargées : {list(product_images.keys())}")
 
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "zec_webhook_2024")
@@ -302,10 +307,14 @@ Quand le client choisit, confirme à l'équipe : "Le client a choisi [Express ou
 Livreur personnel :
 Si le client préfère envoyer son propre livreur, informe-le : "Pas de problème. Merci d'appeler le +225 05 08 31 63 32 pour confirmer notre disponibilité avant d'envoyer votre livreur."
 
+IMAGES PRODUITS :
+Tu as des photos de certains produits que tu peux envoyer aux clients. Si un client demande à voir un produit, réponds positivement : "Oui, je peux vous montrer." ou "Voici une photo." — ne dis jamais que tu n'as pas d'images. Le système enverra automatiquement la photo correspondante.
+
 REGLES IMPORTANTES :
 - Tu es ouverte d'esprit : si un client parle d'autre chose que ZEC, réponds naturellement avec bon sens, puis ramène doucement la conversation vers ZEC si c'est pertinent.
 - Si tu ne connais pas la réponse à une question liée à ZEC, dis : "Je transmets votre demande à notre équipe qui vous répondra dans les plus brefs délais."
-- Ne jamais inventer des prix ou des informations ZEC que tu ne connais pas
+- Ne JAMAIS inventer des prix, services ou informations qui ne sont pas dans ce prompt. Zéro improvisation sur les chiffres ou les offres.
+- Ne JAMAIS dire que tu n'as pas d'images — tu en as pour certains produits.
 - Ne jamais dire "Bonjour" plus d'une fois par conversation
 - "Bonjour" uniquement au tout premier message si le client vient de saluer
 - Réponses courtes et directes — maximum 3-4 lignes
