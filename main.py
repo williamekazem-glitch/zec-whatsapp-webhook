@@ -565,20 +565,34 @@ async def receive_webhook(request: Request):
             await send_whatsapp_message(from_number, reply)
             print(f"Réponse envoyée à {from_number}: {reply[:60]}...")
 
-            # Envoi automatique de photo si le client demande explicitement une image d'un produit
+            # Envoi automatique de photo basé sur l'historique de conversation
             if product_images:
-                mots_visuels = {"photo", "image", "visuel", "voir", "montre", "montres", "exemple", "modèle", "modele", "aperçu", "apercu", "illustration"}
-                client_lower = user_text.lower()
-                demande_visuel = any(mot in client_lower for mot in mots_visuels)
-                if demande_visuel:
-                    mots_vides = {"de", "du", "la", "le", "les", "un", "une", "des", "et", "en", "au", "aux", "ce", "que", "qui", "par"}
-                    for product_name, media_id in product_images.items():
-                        mots_cles = [m for m in product_name.lower().split() if m not in mots_vides and len(m) > 2]
-                        if mots_cles and all(mot in client_lower for mot in mots_cles):
-                            await asyncio.sleep(1)
-                            await send_whatsapp_image(from_number, media_id)
-                            print(f"Photo '{product_name}' envoyée à {from_number}")
-                            break
+                produits_disponibles = ", ".join(product_images.keys())
+                historique = conversation_history.get(from_number, [])
+                historique_texte = "\n".join([f"{m['role']}: {m['content']}" for m in historique[-6:]])
+                detection_prompt = f"""Analyse cette conversation WhatsApp et réponds uniquement par le nom exact d'un produit de la liste, ou "non".
+
+Produits disponibles avec images : {produits_disponibles}
+
+Conversation récente :
+{historique_texte}
+
+Le client demande-t-il à voir une image ou un visuel d'un produit (explicitement ou en référence à la conversation précédente) ?
+Si oui, réponds avec le nom exact du produit de la liste.
+Si non, réponds uniquement "non"."""
+
+                async with httpx.AsyncClient(timeout=15.0) as c:
+                    det = await c.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                        json={"model": "claude-haiku-4-5-20251001", "max_tokens": 50, "messages": [{"role": "user", "content": detection_prompt}]}
+                    )
+                produit_detecte = det.json()["content"][0]["text"].strip().lower()
+                print(f"Détection image : '{produit_detecte}'")
+                if produit_detecte != "non" and produit_detecte in product_images:
+                    await asyncio.sleep(1)
+                    await send_whatsapp_image(from_number, product_images[produit_detecte])
+                    print(f"Photo '{produit_detecte}' envoyée à {from_number}")
 
             # Escalade texte si Awa ne sait pas
             if ESCALADE_TRIGGER in reply:
