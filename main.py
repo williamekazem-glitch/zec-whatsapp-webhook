@@ -216,6 +216,44 @@ async def scheduler_recap():
         await envoyer_recap_quotidien()
 
 
+# ── RELANCE CLIENTS FROIDS ─────────────────────────────────────────────────
+
+# Suivi : { phone: {"question": str, "task": asyncio.Task} }
+clients_en_attente_relance: dict = {}
+
+
+async def relance_client_froid(phone: str, dernier_sujet: str):
+    """Attend 48h puis relance le client s'il n'a pas commandé"""
+    await asyncio.sleep(48 * 3600)
+    # Vérifier si le client a passé commande depuis
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{SUPABASE_URL}/rest/v1/orders?client_phone=eq.{phone}&select=id",
+                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+            )
+            if r.status_code == 200 and r.json():
+                print(f"Pas de relance pour {phone} — commande déjà passée")
+                return
+    except:
+        pass
+
+    # Générer un message de relance personnalisé
+    prompt = f"""Tu es Awa de ZEC (packaging Abidjan). Un client t'a posé une question sur "{dernier_sujet}" il y a 48h mais n'a pas commandé.
+Écris un message de relance court, chaleureux, en vouvoyant. Maximum 2 lignes. Sans emoji. Ne mentionne pas le délai de 48h."""
+
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        r = await c.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 100, "messages": [{"role": "user", "content": prompt}]}
+        )
+    message_relance = r.json()["content"][0]["text"].strip()
+    await send_whatsapp_message(phone, message_relance)
+    print(f"Relance client froid envoyée à {phone} : {message_relance[:60]}")
+    clients_en_attente_relance.pop(phone, None)
+
+
 async def detecter_commande(from_number: str, historique: list):
     """Détecte si une commande vient d'être confirmée et notifie Wallid"""
     if len(historique) < 2:
@@ -254,6 +292,10 @@ Si non, réponds uniquement : non"""
     adresse = lignes.get("ADRESSE", "?")
 
     await save_order(from_number, nom, produit, quantite, adresse)
+    # Annuler la relance client froid puisqu'il a commandé
+    if from_number in clients_en_attente_relance:
+        clients_en_attente_relance[from_number]["task"].cancel()
+        clients_en_attente_relance.pop(from_number, None)
     fiche = (
         f"NOUVELLE COMMANDE\n\n"
         f"Client : {nom} (+{from_number})\n"
@@ -849,10 +891,29 @@ Ignore les fautes d'orthographe.
             # Détection commande confirmée
             asyncio.create_task(detecter_commande(from_number, historique))
 
+            # Détection paiement
+            mots_paiement = {"payé", "paye", "j'ai payé", "j'ai envoyé", "virement", "wave", "orange money", "transfert", "payment", "transaction"}
+            if any(mot in user_text.lower() for mot in mots_paiement):
+                await send_whatsapp_message(
+                    from_number,
+                    "Merci. Pourriez-vous nous envoyer la capture de confirmation de votre paiement ? Cela nous permettra de valider votre commande rapidement."
+                )
+                await send_whatsapp_message(
+                    SUPERVISOR_NUMBER,
+                    f"PAIEMENT SIGNALÉ\nClient : +{from_number}\nMessage : {user_text}\n\nEn attente de la capture."
+                )
+                print(f"Paiement signalé par {from_number}")
+
             # Escalade texte si Awa ne sait pas
             if ESCALADE_TRIGGER in reply:
                 pending_supervisor[from_number] = user_text
                 await notify_supervisor(from_number, user_text)
+
+            # Relance client froid — annuler l'ancienne tâche si elle existe, en démarrer une nouvelle
+            if from_number in clients_en_attente_relance:
+                clients_en_attente_relance[from_number]["task"].cancel()
+            task = asyncio.create_task(relance_client_froid(from_number, user_text))
+            clients_en_attente_relance[from_number] = {"question": user_text, "task": task}
 
             # Livraison : si Awa vient de demander la localisation → prépare le suivi
             if LIVRAISON_TRIGGER in reply.lower():
