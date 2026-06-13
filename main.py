@@ -12,7 +12,7 @@ from fastapi.responses import PlainTextResponse
 
 app = FastAPI()
 
-# Historique des conversations par numéro (en mémoire)
+# Cache local de l'historique (évite trop d'appels Supabase dans la même session)
 conversation_history: dict = {}
 
 # Escalade texte : client_number -> question posée
@@ -107,6 +107,46 @@ async def get_admin_images() -> list:
     except Exception as e:
         print(f"Erreur chargement images Supabase: {e}")
     return []
+
+
+async def load_conversation(phone: str) -> list:
+    """Charge l'historique d'une conversation depuis Supabase"""
+    if phone in conversation_history:
+        return conversation_history[phone]
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{SUPABASE_URL}/rest/v1/conversation_history?phone=eq.{phone}&select=messages",
+                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+            )
+        if response.status_code == 200:
+            data = response.json()
+            msgs = data[0]["messages"] if data else []
+            conversation_history[phone] = msgs
+            return msgs
+    except Exception as e:
+        print(f"Erreur chargement historique: {e}")
+    conversation_history[phone] = []
+    return []
+
+
+async def save_conversation(phone: str, messages: list):
+    """Sauvegarde l'historique d'une conversation dans Supabase (upsert)"""
+    conversation_history[phone] = messages
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/conversation_history",
+                headers={
+                    "apikey": SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates"
+                },
+                json={"phone": phone, "messages": messages, "updated_at": "now()"}
+            )
+    except Exception as e:
+        print(f"Erreur sauvegarde historique: {e}")
 
 
 @app.on_event("startup")
@@ -331,12 +371,10 @@ async def send_whatsapp_image(to: str, media_id: str, caption: str = ""):
 
 
 async def get_claude_response(from_number: str, user_message: str) -> str:
-    """Appelle Claude avec l'historique de conversation"""
-    if from_number not in conversation_history:
-        conversation_history[from_number] = []
-
-    conversation_history[from_number].append({"role": "user", "content": user_message})
-    messages = conversation_history[from_number][-20:]
+    """Appelle Claude avec l'historique de conversation (persisté dans Supabase)"""
+    msgs = await load_conversation(from_number)
+    msgs.append({"role": "user", "content": user_message})
+    messages = msgs[-20:]
 
     # Recharger les infos ADMIN depuis Supabase à chaque appel
     await load_admin_knowledge()
@@ -363,7 +401,8 @@ async def get_claude_response(from_number: str, user_message: str) -> str:
         )
     data = response.json()
     reply = data["content"][0]["text"]
-    conversation_history[from_number].append({"role": "assistant", "content": reply})
+    messages.append({"role": "assistant", "content": reply})
+    await save_conversation(from_number, messages)
     return reply
 
 
@@ -389,9 +428,9 @@ async def improve_supervisor_draft(client_number: str, original_question: str, d
     data = response.json()
     improved = data["content"][0]["text"]
 
-    if client_number not in conversation_history:
-        conversation_history[client_number] = []
-    conversation_history[client_number].append({"role": "assistant", "content": improved})
+    msgs = await load_conversation(client_number)
+    msgs.append({"role": "assistant", "content": improved})
+    await save_conversation(client_number, msgs[-20:])
     return improved
 
 
@@ -518,12 +557,9 @@ async def receive_webhook(request: Request):
                         media_id,
                         caption="Voici les options de livraison pour votre adresse. Vous préférez Express ou 3H ?"
                     )
-                    if client_number not in conversation_history:
-                        conversation_history[client_number] = []
-                    conversation_history[client_number].append({
-                        "role": "assistant",
-                        "content": "J'ai envoyé la capture Yango au client avec les options Express et 3H."
-                    })
+                    msgs = await load_conversation(client_number)
+                    msgs.append({"role": "assistant", "content": "J'ai envoyé la capture Yango au client avec les options Express et 3H."})
+                    await save_conversation(client_number, msgs[-20:])
                     await send_whatsapp_message(SUPERVISOR_NUMBER, f"Capture transmise au client +{client_number}.")
                     print(f"Capture Yango transmise au client {client_number}")
 
@@ -579,7 +615,7 @@ async def receive_webhook(request: Request):
             # Envoi automatique de photo basé sur l'historique de conversation
             if product_images:
                 produits_disponibles = ", ".join(product_images.keys())
-                historique = conversation_history.get(from_number, [])
+                historique = await load_conversation(from_number)
                 historique_texte = "\n".join([f"{m['role']}: {m['content']}" for m in historique[-6:]])
                 detection_prompt = f"""Analyse cette conversation WhatsApp et réponds uniquement par le nom exact d'un produit de la liste, ou "non".
 
