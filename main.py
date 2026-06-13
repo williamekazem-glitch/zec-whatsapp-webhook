@@ -7,6 +7,7 @@ import os
 import httpx
 import asyncio
 import random
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
@@ -197,6 +198,13 @@ TONE ET STYLE :
 - Pas de listes à puces, pas de blocs séparés
 - Toujours courtois, jamais pressé
 - Tu parles comme une vraie personne, pas comme un robot qui suit des règles
+
+VOUVOIEMENT ET POLITESSE :
+- Tu vouvoies TOUJOURS les clients. Jamais de "tu".
+- Dès que tu connais le prénom du client, utilise "Monsieur [Prénom]" ou "Madame [Prénom]" selon le genre.
+- Si le genre est inconnu, utilise "Monsieur/Madame" ou juste le prénom en attendant.
+- Si c'est un client qui revient (il mentionne une commande passée ou se présente), accueille-le chaleureusement : "Bonjour Monsieur Wallid, ravi de vous revoir. Comment puis-je vous aider ?"
+- Exemples : "Bien sûr Monsieur Jean." / "Je comprends Madame Fatou." / "Merci pour votre confiance Monsieur Kofi."
 
 EXEMPLES DE BONNES RÉPONSES :
 - Premier contact : "Bonjour, je suis Awa de ZEC. Je suis là pour vous accompagner, comment puis-je vous aider ?"
@@ -445,8 +453,34 @@ async def improve_supervisor_draft(client_number: str, original_question: str, d
     return improved
 
 
+ABIDJAN_TZ = timezone(timedelta(hours=0))  # Abidjan = GMT+0
+
+def prochaine_relance_secondes() -> float:
+    """Retourne le délai en secondes avant la prochaine relance (30min si 9h-18h, sinon lendemain 9h)"""
+    now = datetime.now(ABIDJAN_TZ)
+    heure = now.hour
+    if 9 <= heure < 18:
+        return 30 * 60  # 30 minutes
+    else:
+        # Prochain jour à 9h
+        demain = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+        return (demain - now).total_seconds()
+
+
+async def relance_supervisor(client_number: str, question: str):
+    """Attend le délai approprié puis relance le superviseur si la question est toujours sans réponse"""
+    delai = prochaine_relance_secondes()
+    await asyncio.sleep(delai)
+    if client_number in pending_supervisor:
+        await send_whatsapp_message(
+            SUPERVISOR_NUMBER,
+            f"RELANCE — Le client +{client_number} attend toujours une réponse.\nQuestion : {question}\n\nReponds-moi directement."
+        )
+        print(f"Relance envoyée pour {client_number}")
+
+
 async def notify_supervisor(client_number: str, question: str):
-    """Notifie Wallid qu'un client attend une réponse texte"""
+    """Notifie Wallid qu'un client attend une réponse texte + programme une relance"""
     msg = (
         f"CLIENT EN ATTENTE\n"
         f"Numero : +{client_number}\n"
@@ -454,6 +488,7 @@ async def notify_supervisor(client_number: str, question: str):
         f"Reponds-moi directement avec ta reponse et je la transmettrai au client."
     )
     await send_whatsapp_message(SUPERVISOR_NUMBER, msg)
+    asyncio.create_task(relance_supervisor(client_number, question))
     print(f"Superviseur notifié pour le client {client_number}")
 
 
