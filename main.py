@@ -22,8 +22,10 @@ pending_supervisor: dict = {}
 pending_image_transfer: str = ""  # numéro du dernier client qui attend une capture
 
 # Catalogue photos produits : { "sac cabas": media_id, ... }
-# Wallid alimente ce catalogue en envoyant une image avec caption "PHOTO: nom produit"
 product_images: dict = {}
+
+# Clients en attente d'une image produit : { "product_name": "client_number" }
+pending_product_image: dict = {}
 
 # Cache local des infos ADMIN (chargé depuis Supabase au démarrage)
 admin_knowledge: list = []
@@ -530,10 +532,28 @@ async def receive_webhook(request: Request):
                 product_images[name] = media_id
                 saved = await save_admin_image(name, media_id)
                 status = "enregistree" if saved else "enregistree en memoire uniquement"
-                await send_whatsapp_message(
-                    from_number,
-                    f"Image {status} pour Awa : \"{name}\".\nAwa enverra cette image + ses infos quand un client posera une question sur ce sujet."
-                )
+
+                # Vérifier si un client attendait cette image
+                client_en_attente = None
+                for prod_key, client_num in list(pending_product_image.items()):
+                    if prod_key in name or name in prod_key:
+                        client_en_attente = client_num
+                        del pending_product_image[prod_key]
+                        break
+
+                if client_en_attente:
+                    await asyncio.sleep(1)
+                    await send_whatsapp_image(client_en_attente, media_id)
+                    await send_whatsapp_message(
+                        from_number,
+                        f"Image {status} pour \"{name}\" et envoyee au client +{client_en_attente}."
+                    )
+                    print(f"Image '{name}' transmise au client {client_en_attente}")
+                else:
+                    await send_whatsapp_message(
+                        from_number,
+                        f"Image {status} pour Awa : \"{name}\"."
+                    )
                 print(f"ADMIN image ajoutee : {name} -> {media_id}")
                 return {"status": "ok"}
 
@@ -622,31 +642,42 @@ async def receive_webhook(request: Request):
             print(f"Réponse envoyée à {from_number}: {reply[:60]}...")
 
             # Envoi automatique de photo basé sur l'historique de conversation
-            if product_images:
-                produits_disponibles = ", ".join(product_images.keys())
-                historique = await load_conversation(from_number)
-                historique_texte = "\n".join([f"{m['role']}: {m['content']}" for m in historique[-6:]])
-                detection_prompt = f"""Analyse cette conversation WhatsApp et réponds uniquement par le nom exact d'un produit de la liste, ou "non".
+            historique = await load_conversation(from_number)
+            historique_texte = "\n".join([f"{m['role']}: {m['content']}" for m in historique[-6:]])
+            produits_disponibles = ", ".join(product_images.keys()) if product_images else "aucun"
+            detection_prompt = f"""Analyse cette conversation WhatsApp.
 
-Produits disponibles avec images : {produits_disponibles}
+Produits avec images disponibles : {produits_disponibles}
 
 Conversation récente :
 {historique_texte}
 
 Le client demande-t-il à voir une image ou un visuel d'un produit (explicitement ou en référence à la conversation précédente) ?
-Ignore les fautes d'orthographe — si le client parle clairement d'un produit de la liste malgré une faute, fais la correspondance.
-Si oui, réponds avec le nom exact du produit tel qu'il apparaît dans la liste ci-dessus.
-Si non, réponds uniquement "non"."""
+Ignore les fautes d'orthographe.
+- Si oui ET le produit est dans la liste : réponds avec le nom exact du produit de la liste.
+- Si oui MAIS le produit n'est pas dans la liste : réponds "demande:" suivi du nom du produit demandé (ex: "demande:carte de remerciement").
+- Sinon : réponds uniquement "non"."""
 
-                async with httpx.AsyncClient(timeout=15.0) as c:
-                    det = await c.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                        json={"model": "claude-haiku-4-5-20251001", "max_tokens": 50, "messages": [{"role": "user", "content": detection_prompt}]}
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                det = await c.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 60, "messages": [{"role": "user", "content": detection_prompt}]}
+                )
+            produit_detecte = det.json()["content"][0]["text"].strip().lower()
+            print(f"Détection image : '{produit_detecte}'")
+
+            if produit_detecte != "non":
+                if produit_detecte.startswith("demande:"):
+                    # Image manquante — demander à l'admin
+                    nom_produit = produit_detecte[8:].strip()
+                    pending_product_image[nom_produit] = from_number
+                    await send_whatsapp_message(
+                        SUPERVISOR_NUMBER,
+                        f"IMAGE MANQUANTE\nLe client +{from_number} demande une photo de : {nom_produit}\n\nEnvoie l'image avec la légende : ADMIN: {nom_produit}"
                     )
-                produit_detecte = det.json()["content"][0]["text"].strip().lower()
-                print(f"Détection image : '{produit_detecte}'")
-                if produit_detecte != "non" and produit_detecte in product_images:
+                    print(f"Admin notifié pour image manquante : '{nom_produit}'")
+                elif produit_detecte in product_images:
                     await asyncio.sleep(1)
                     await send_whatsapp_image(from_number, product_images[produit_detecte])
                     print(f"Photo '{produit_detecte}' envoyée à {from_number}")
