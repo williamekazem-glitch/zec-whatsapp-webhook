@@ -266,7 +266,13 @@ REGLES IMPORTANTES :
 - Réponses courtes et directes — maximum 3-4 lignes
 - Zéro emoji dans les messages
 - Style professionnel et courtois
-- Si le client veut commander, collecte : nom complet, produit souhaité, quantité, adresse de livraison"""
+- Si le client veut commander, collecte : nom complet, produit souhaité, quantité, adresse de livraison
+
+FAUTES D'ORTHOGRAPHE :
+Les clients écrivent souvent avec des fautes. Tu dois reconnaître les produits ZEC même mal orthographiés.
+Exemples : "ficeles" = ficelles, "sachets zipp" = sachets zip, "cabas A3" = sac cabas A3, "etikette" = étiquette.
+Si tu n'es pas sûre de ce que le client veut dire, pose la question : "Parlez-vous de [nom correct du produit] ?"
+Ne jamais refuser de répondre uniquement à cause d'une faute d'orthographe."""
 
 IMPROVE_PROMPT = """Tu es Awa, commerciale chez ZEC (packaging, Abidjan).
 On t'a transmis une ébauche de réponse à envoyer à un client.
@@ -578,7 +584,8 @@ Conversation récente :
 {historique_texte}
 
 Le client demande-t-il à voir une image ou un visuel d'un produit (explicitement ou en référence à la conversation précédente) ?
-Si oui, réponds avec le nom exact du produit de la liste.
+Ignore les fautes d'orthographe — si le client parle clairement d'un produit de la liste malgré une faute, fais la correspondance.
+Si oui, réponds avec le nom exact du produit tel qu'il apparaît dans la liste ci-dessus.
 Si non, réponds uniquement "non"."""
 
                 async with httpx.AsyncClient(timeout=15.0) as c:
