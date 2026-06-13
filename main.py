@@ -599,7 +599,8 @@ async def notify_supervisor(client_number: str, question: str):
         f"CLIENT EN ATTENTE\n"
         f"Numero : +{client_number}\n"
         f"Question : {question}\n\n"
-        f"Reponds-moi directement avec ta reponse et je la transmettrai au client."
+        f"• Reponds directement → je transmets au client (one shot)\n"
+        f"• Reponds avec ADMIN: ta reponse → je transmets ET je retiens pour toujours"
     )
     await send_whatsapp_message(SUPERVISOR_NUMBER, msg)
     asyncio.create_task(relance_supervisor(client_number, question))
@@ -659,10 +660,24 @@ async def receive_webhook(request: Request):
                 admin_knowledge.append(info)
                 saved = await save_admin_knowledge(info)
                 status = "enregistree" if saved else "enregistree en memoire uniquement"
-                await send_whatsapp_message(
-                    from_number,
-                    f"Info {status} pour Awa :\n\"{info}\"\n\nTotal : {len(admin_knowledge)} infos"
-                )
+
+                # Si un client était en attente d'escalade, répondre avec cette info
+                if pending_supervisor:
+                    client_number, original_question = next(iter(pending_supervisor.items()))
+                    del pending_supervisor[client_number]
+                    await asyncio.sleep(random.uniform(1, 2))
+                    improved = await improve_supervisor_draft(client_number, original_question, info)
+                    await send_whatsapp_message(client_number, improved)
+                    await send_whatsapp_message(
+                        from_number,
+                        f"Info {status} et réponse transmise au client +{client_number}."
+                    )
+                    print(f"ADMIN réponse + sauvegarde pour client {client_number}: {info}")
+                else:
+                    await send_whatsapp_message(
+                        from_number,
+                        f"Info {status} pour Awa :\n\"{info}\"\n\nTotal : {len(admin_knowledge)} infos"
+                    )
                 print(f"ADMIN info ajoutee par {from_number}: {info}")
             else:
                 await send_whatsapp_message(
