@@ -567,10 +567,11 @@ async def receive_webhook(request: Request):
 
             # Envoi automatique de photo + infos si le client demande un produit
             if product_images:
+                mots_vides = {"de", "du", "la", "le", "les", "un", "une", "des", "et", "en", "au", "aux", "ce", "que", "qui", "par"}
                 texte_lower = (user_text + " " + reply).lower()
                 for product_name, media_id in product_images.items():
-                    mots_cles = product_name.lower().split()
-                    if any(mot in texte_lower for mot in mots_cles):
+                    mots_cles = [m for m in product_name.lower().split() if m not in mots_vides and len(m) > 2]
+                    if mots_cles and all(mot in texte_lower for mot in mots_cles):
                         await asyncio.sleep(1)
                         await send_whatsapp_image(from_number, media_id)
                         print(f"Photo '{product_name}' envoyée à {from_number}")
