@@ -70,6 +70,45 @@ async def save_admin_knowledge(info: str):
         return False
 
 
+async def save_admin_image(name: str, media_id: str):
+    """Sauvegarde une image ADMIN dans Supabase (table admin_images)"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{SUPABASE_URL}/rest/v1/admin_images",
+                headers={
+                    "apikey": SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                json={"name": name, "media_id": media_id}
+            )
+        print(f"Supabase image save: {response.status_code}")
+        return response.status_code in (200, 201)
+    except Exception as e:
+        print(f"Erreur sauvegarde image Supabase: {e}")
+        return False
+
+
+async def get_admin_images() -> list:
+    """Charge toutes les images ADMIN depuis Supabase"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{SUPABASE_URL}/rest/v1/admin_images?select=name,media_id",
+                headers={
+                    "apikey": SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}"
+                }
+            )
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"Erreur chargement images Supabase: {e}")
+    return []
+
+
 @app.on_event("startup")
 async def startup_event():
     await load_admin_knowledge()
@@ -401,7 +440,8 @@ async def receive_webhook(request: Request):
 
         print(f"Message recu de {from_number}, type: {msg_type}")
 
-        # ── CAS 0 : COMMANDE ADMIN (Wallid ou Zeinab) ─────────────────────
+        # ── CAS 0 : COMMANDE ADMIN ─────────────────────────────────────────
+        # ADMIN texte
         if msg_type == "text" and message["text"]["body"].upper().startswith("ADMIN:"):
             user_text = message["text"]["body"]
             if from_number in ADMIN_NUMBERS:
@@ -415,13 +455,28 @@ async def receive_webhook(request: Request):
                 )
                 print(f"ADMIN info ajoutee par {from_number}: {info}")
             else:
-                # Numéro non autorisé — renvoie le numéro reçu pour debug
                 await send_whatsapp_message(
                     SUPERVISOR_NUMBER,
                     f"Tentative ADMIN refusee.\nNumero recu : {from_number}\nAjouter ce numero aux ADMIN_NUMBERS si autorise."
                 )
                 print(f"ADMIN refuse pour {from_number} - non dans ADMIN_NUMBERS: {ADMIN_NUMBERS}")
             return {"status": "ok"}
+
+        # ADMIN image
+        if msg_type == "image" and from_number in ADMIN_NUMBERS:
+            caption = message["image"].get("caption", "").strip()
+            if caption.upper().startswith("ADMIN:"):
+                media_id = message["image"]["id"]
+                name = caption[6:].strip().lower()
+                product_images[name] = media_id
+                saved = await save_admin_image(name, media_id)
+                status = "enregistree" if saved else "enregistree en memoire uniquement"
+                await send_whatsapp_message(
+                    from_number,
+                    f"Image {status} pour Awa : \"{name}\".\nAwa enverra cette image + ses infos quand un client posera une question sur ce sujet."
+                )
+                print(f"ADMIN image ajoutee : {name} -> {media_id}")
+                return {"status": "ok"}
 
         # ── CAS 1 : MESSAGE DE WALLID ──────────────────────────────────────
         if from_number == SUPERVISOR_NUMBER:
@@ -510,16 +565,16 @@ async def receive_webhook(request: Request):
             await send_whatsapp_message(from_number, reply)
             print(f"Réponse envoyée à {from_number}: {reply[:60]}...")
 
-            # Envoi automatique de photo si le client demande un visuel produit
+            # Envoi automatique de photo + infos si le client demande un produit
             if product_images:
-                texte_lower = user_text.lower()
+                texte_lower = (user_text + " " + reply).lower()
                 for product_name, media_id in product_images.items():
-                    if any(mot in texte_lower for mot in ["photo", "image", "visuel", "voir", "montre", "exemple"]):
-                        if product_name in texte_lower or any(mot in texte_lower for mot in ["produit", "sac", "sachet", "carte"]):
-                            await asyncio.sleep(1)
-                            await send_whatsapp_image(from_number, media_id)
-                            print(f"Photo produit '{product_name}' envoyée à {from_number}")
-                            break
+                    mots_cles = product_name.lower().split()
+                    if any(mot in texte_lower for mot in mots_cles):
+                        await asyncio.sleep(1)
+                        await send_whatsapp_image(from_number, media_id)
+                        print(f"Photo '{product_name}' envoyée à {from_number}")
+                        break
 
             # Escalade texte si Awa ne sait pas
             if ESCALADE_TRIGGER in reply:
