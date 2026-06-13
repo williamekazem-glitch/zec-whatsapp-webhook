@@ -152,14 +152,128 @@ async def save_conversation(phone: str, messages: list):
         print(f"Erreur sauvegarde historique: {e}")
 
 
+async def save_order(phone: str, name: str, product: str, quantity: str, address: str):
+    """Sauvegarde une commande confirmée dans Supabase"""
+    try:
+        async with httpx.AsyncClient() as c:
+            await c.post(
+                f"{SUPABASE_URL}/rest/v1/orders",
+                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                json={"client_phone": phone, "client_name": name, "product": product, "quantity": quantity, "address": address}
+            )
+    except Exception as e:
+        print(f"Erreur save order: {e}")
+
+
+async def get_daily_stats() -> dict:
+    """Récupère les stats du jour depuis Supabase"""
+    today = datetime.now(ABIDJAN_TZ).strftime("%Y-%m-%d")
+    stats = {"clients": 0, "commandes": 0, "sans_reponse": len(pending_supervisor)}
+    try:
+        async with httpx.AsyncClient() as c:
+            r1 = await c.get(
+                f"{SUPABASE_URL}/rest/v1/conversation_history?updated_at=gte.{today}&select=phone",
+                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+            )
+            if r1.status_code == 200:
+                stats["clients"] = len(r1.json())
+
+            r2 = await c.get(
+                f"{SUPABASE_URL}/rest/v1/orders?created_at=gte.{today}&select=id",
+                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+            )
+            if r2.status_code == 200:
+                stats["commandes"] = len(r2.json())
+    except Exception as e:
+        print(f"Erreur stats: {e}")
+    return stats
+
+
+async def envoyer_recap_quotidien():
+    """Envoie le récap du matin à Wallid"""
+    stats = await get_daily_stats()
+    sans_rep = "\n".join([f"- +{num} : {q}" for num, q in pending_supervisor.items()]) or "Aucune"
+    msg = (
+        f"*Bonjour Wallid — Récap Awa*\n\n"
+        f"Clients actifs aujourd'hui : {stats['clients']}\n"
+        f"Commandes enregistrées : {stats['commandes']}\n"
+        f"Questions sans réponse : {stats['sans_reponse']}\n\n"
+        f"*Questions en attente :*\n{sans_rep}"
+    )
+    await send_whatsapp_message(SUPERVISOR_NUMBER, msg)
+    print("Récap quotidien envoyé")
+
+
+async def scheduler_recap():
+    """Lance le récap chaque matin à 9h Abidjan"""
+    while True:
+        now = datetime.now(ABIDJAN_TZ)
+        demain_9h = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+        if now.hour < 9:
+            demain_9h = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        attente = (demain_9h - now).total_seconds()
+        await asyncio.sleep(attente)
+        await envoyer_recap_quotidien()
+
+
+async def detecter_commande(from_number: str, historique: list):
+    """Détecte si une commande vient d'être confirmée et notifie Wallid"""
+    if len(historique) < 2:
+        return
+    historique_texte = "\n".join([f"{m['role']}: {m['content']}" for m in historique[-8:]])
+    prompt = f"""Analyse cette conversation WhatsApp d'une boutique de packaging (ZEC).
+
+{historique_texte}
+
+Une commande vient-elle d'être confirmée dans cette conversation (le client a donné son nom, produit, quantité ET adresse) ?
+Si oui, réponds au format exact :
+NOM: [nom complet]
+PRODUIT: [produit]
+QUANTITE: [quantité]
+ADRESSE: [adresse]
+
+Si non, réponds uniquement : non"""
+
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        r = await c.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 150, "messages": [{"role": "user", "content": prompt}]}
+        )
+    resultat = r.json()["content"][0]["text"].strip()
+    print(f"Détection commande : {resultat[:80]}")
+
+    if resultat.lower().startswith("non"):
+        return
+
+    # Parser la fiche
+    lignes = {l.split(":")[0].strip(): l.split(":", 1)[1].strip() for l in resultat.splitlines() if ":" in l}
+    nom = lignes.get("NOM", "Inconnu")
+    produit = lignes.get("PRODUIT", "?")
+    quantite = lignes.get("QUANTITE", "?")
+    adresse = lignes.get("ADRESSE", "?")
+
+    await save_order(from_number, nom, produit, quantite, adresse)
+    fiche = (
+        f"NOUVELLE COMMANDE\n\n"
+        f"Client : {nom} (+{from_number})\n"
+        f"Produit : {produit}\n"
+        f"Quantité : {quantite}\n"
+        f"Adresse : {adresse}\n\n"
+        f"Statut : En attente de traitement"
+    )
+    await send_whatsapp_message(SUPERVISOR_NUMBER, fiche)
+    print(f"Commande détectée et envoyée à Wallid : {nom}")
+
+
 @app.on_event("startup")
 async def startup_event():
     await load_admin_knowledge()
-    # Charger les images produits depuis Supabase
     images = await get_admin_images()
     for item in images:
         product_images[item["name"]] = item["media_id"]
     print(f"Images produits chargées : {list(product_images.keys())}")
+    asyncio.create_task(scheduler_recap())
 
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "zec_webhook_2024")
@@ -716,6 +830,9 @@ Ignore les fautes d'orthographe.
                     await asyncio.sleep(1)
                     await send_whatsapp_image(from_number, product_images[produit_detecte])
                     print(f"Photo '{produit_detecte}' envoyée à {from_number}")
+
+            # Détection commande confirmée
+            asyncio.create_task(detecter_commande(from_number, historique))
 
             # Escalade texte si Awa ne sait pas
             if ESCALADE_TRIGGER in reply:
