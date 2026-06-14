@@ -146,7 +146,7 @@ async def save_conversation(phone: str, messages: list):
                     "Content-Type": "application/json",
                     "Prefer": "resolution=merge-duplicates"
                 },
-                json={"phone": phone, "messages": messages, "updated_at": "now()"}
+                json={"phone": phone, "messages": messages, "updated_at": datetime.now(timezone.utc).isoformat()}
             )
     except Exception as e:
         print(f"Erreur sauvegarde historique: {e}")
@@ -290,6 +290,22 @@ Si non, réponds uniquement : non"""
     produit = lignes.get("PRODUIT", "?")
     quantite = lignes.get("QUANTITE", "?")
     adresse = lignes.get("ADRESSE", "?")
+
+    # Anti-doublon : ne pas re-notifier si la même commande existe déjà aujourd'hui
+    today = datetime.now(ABIDJAN_TZ).strftime("%Y-%m-%d")
+    try:
+        async with httpx.AsyncClient() as c:
+            existing = await c.get(
+                f"{SUPABASE_URL}/rest/v1/orders?client_phone=eq.{from_number}&created_at=gte.{today}&select=product,quantity",
+                headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+            )
+            if existing.status_code == 200:
+                for o in existing.json():
+                    if o.get("product") == produit and o.get("quantity") == quantite:
+                        print(f"Commande déjà enregistrée pour {from_number}, pas de re-notification")
+                        return
+    except Exception as e:
+        print(f"Erreur vérif doublon commande: {e}")
 
     await save_order(from_number, nom, produit, quantite, adresse)
     # Annuler la relance client froid puisqu'il a commandé
@@ -612,13 +628,17 @@ async def improve_supervisor_draft(client_number: str, original_question: str, d
 ABIDJAN_TZ = timezone(timedelta(hours=0))  # Abidjan = GMT+0
 
 def prochaine_relance_secondes() -> float:
-    """Retourne le délai en secondes avant la prochaine relance (30min si 9h-18h, sinon lendemain 9h)"""
+    """Retourne le délai en secondes avant la prochaine relance (30min si 9h-18h, sinon prochain 9h)"""
     now = datetime.now(ABIDJAN_TZ)
     heure = now.hour
     if 9 <= heure < 18:
         return 30 * 60  # 30 minutes
+    elif heure < 9:
+        # Tôt le matin (minuit-9h) → aujourd'hui à 9h
+        cible = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        return (cible - now).total_seconds()
     else:
-        # Prochain jour à 9h
+        # Après 18h → lendemain à 9h
         demain = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
         return (demain - now).total_seconds()
 
@@ -891,9 +911,15 @@ Ignore les fautes d'orthographe.
             # Détection commande confirmée
             asyncio.create_task(detecter_commande(from_number, historique))
 
-            # Détection paiement
-            mots_paiement = {"payé", "paye", "j'ai payé", "j'ai envoyé", "virement", "wave", "orange money", "transfert", "payment", "transaction"}
-            if any(mot in user_text.lower() for mot in mots_paiement):
+            # Détection paiement — expressions d'action passée uniquement (évite les faux positifs type "vous prenez Wave ?")
+            txt_lower = user_text.lower()
+            expr_paiement = [
+                "j'ai payé", "jai payé", "j'ai paye", "jai paye", "g payé", "g paye",
+                "j'ai envoyé", "jai envoyé", "j'ai fait le transfert", "j'ai fait le virement",
+                "paiement effectué", "paiement fait", "argent envoyé", "j'ai transféré",
+                "viens de payer", "vient de payer", "déjà payé", "deja paye"
+            ]
+            if any(expr in txt_lower for expr in expr_paiement):
                 await send_whatsapp_message(
                     from_number,
                     "Merci. Pourriez-vous nous envoyer la capture de confirmation de votre paiement ? Cela nous permettra de valider votre commande rapidement."
